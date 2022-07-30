@@ -51,37 +51,42 @@ def train_model(
 		batch_size: int,
 		num_epochs: int,
 		learning_rate: float,
+		validation_percent: float,
 		**kwargs,  # Leave this in so we have a sink for extra arguments that might show up in our config.
-):
+) -> None:
 	"""
 	We're using a more traditional Torch-style training system rather than the built-in HuggingFace trainer because we
 	want a finer-grained control over the learning rate and curriculum.  We can also
-	:param model:
-	:param training_data_pairs:
-	:param batch_size:
-	:param num_epochs:
-	:param learning_rate:
 	:return:
 	"""
 	model.to(device)
-	model.train()
+	shuffle(training_data_pairs)
+	train_data = training_data_pairs[:int(len(training_data_pairs)*validation_percent)]
+	validation_data = training_data_pairs[-int(len(training_data_pairs) * validation_percent):]
 	# Shuffle our training data and make a validation set from it.
 	optimizer = AdamW(model.parameters(), lr=learning_rate)
 	for epoch in range(num_epochs):
-		shuffle(training_data_pairs)
-		for offset in range(0, len(training_data_pairs), batch_size):
-			train_x = [x[0] for x in training_data_pairs[offset:offset+batch_size]]
-			train_y = [x[1] for x in training_data_pairs[offset:offset+batch_size]]
-			train_x = transform_and_preprocess(train_x).to(device)
-			train_y = transform_and_preprocess(train_y).to(device)
-			loss = model(train_x, labels=train_y).loss
+		shuffle(train_data)
+		model.train()
+		for offset in range(0, len(train_data), batch_size):
+			text = [x[0] for x in train_data[offset:offset+batch_size]]
+			target = [x[1] for x in train_data[offset:offset+batch_size]]
+			text = transform_and_preprocess(text).to(device)
+			target = transform_and_preprocess(target).to(device)
+			loss = model(text, labels=target).loss
 			loss.backward()
 			optimizer.step()
 			optimizer.zero_grad()
-
+		model.eval()
+		for offset in range(0, len(validation_data), batch_size):
+			text = [x[0] for x in train_data[offset:offset + batch_size]]
+			target = [x[1] for x in train_data[offset:offset + batch_size]]
+			text = transform_and_preprocess(text).to(device)
+			target = transform_and_preprocess(target).to(device)
+			loss = model(text, labels=target).loss
 
 def load_data(dataset: str) -> List[Tuple[str, str]]:
-	# Small disclaimer: the huffpo data has these fields: url,topics,title,text,date,text_len,num_topics,text_ending,extractive
+	# Small disclaimer: the data has these fields: url,topics,title,text,date,text_len,num_topics,text_ending,extractive
 	# We expect that topics, title, and text will be present.
 	# For now we use only text and topics, but we could try title or others.
 
@@ -102,9 +107,10 @@ def load_data(dataset: str) -> List[Tuple[str, str]]:
 def main():
 	training_configuration = {
 		"dataset": "../data/topic_data.csv",
-		"batch_size": 16,
-		"num_epochs": 10,
+		"batch_size": 8,
+		"num_epochs": 3,
 		"learning_rate": 1e-5,
+		"validation_percent": 0.1,
 	}
 
 	# Log the last run before we start:

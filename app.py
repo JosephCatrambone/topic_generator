@@ -4,7 +4,12 @@ app = Flask(__name__)
 
 
 @app.route('/')
-def hello_world():  # put application's code here
+def index():
+	return 'Ohai!'
+
+
+@app.route('/api/v1/', method=['POST'])
+def make_topics():
 	return 'Hello World!'
 
 
