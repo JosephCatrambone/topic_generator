@@ -22,7 +22,7 @@ from torch.optim import AdamW
 MAX_INPUT_LENGTH = 400  # Characters, not tokens.
 PROMPT_PREFIX = "keywords for text: "
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-tokenizer = AutoTokenizer.from_pretrained('google/byt5-small')
+tokenizer = AutoTokenizer.from_pretrained('google/byt5-small')  # If this changes, be sure to update the Dockerfile.
 _serving_model = None  # A lazy global which should, in general, be used only by predict.
 
 
