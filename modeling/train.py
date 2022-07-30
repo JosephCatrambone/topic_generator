@@ -19,8 +19,28 @@ from transformers import T5ForConditionalGeneration
 from torch.optim import AdamW
 
 # Some slightly gross global-state things.
+MAX_INPUT_LENGTH = 256  # Characters, not tokens.
+PROMPT_PREFIX = "keywords for text: "
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 tokenizer = AutoTokenizer.from_pretrained('google/byt5-small')
+_serving_model = None  # A lazy global which should, in general, be used only by predict.
+
+
+def predict(input_batch: List[str]) -> List[str]:
+	"""
+	Perform a full inference pass, including the tokenization and preprocessing of inputs,
+	pass all examples through the model, and produce an output.
+	This is a convenience method that we want to export for use in the main application.
+	:param model:
+	:param input_batch:
+	:return:
+	"""
+	global _serving_model
+	if _serving_model is None:
+		_serving_model = T5ForConditionalGeneration.from_pretrained("./modeling/trained_model", local_files_only=True)
+	inputs = transform_and_preprocess(input_batch)
+	outputs = _serving_model.generate(inputs)
+	return [tokenizer.decode(out, skip_special_tokens=True) for out in outputs]
 
 
 def build_model(restore: bool = False) -> T5ForConditionalGeneration:
@@ -42,6 +62,7 @@ def transform_and_preprocess(input_batch: List[str]) -> torch.Tensor:
 	# If we weren't using the auto-tokenizer to pad, we would do this:
 	# return torch.tensor([list(txt.encode("utf-8")) for txt in input_batch]) + 3
 	# The +3 broadcasts and offsets all tokens by three.  The values 0, 1, and 2 are reserved.
+	input_batch = [PROMPT_PREFIX + x[:MAX_INPUT_LENGTH] for x in input_batch]  # Trim everything to a capped length to avoid OOM.
 	return tokenizer(input_batch, padding="longest", return_tensors="pt").input_ids
 
 
@@ -52,6 +73,7 @@ def train_model(
 		num_epochs: int,
 		learning_rate: float,
 		validation_percent: float,
+		log_out,
 		**kwargs,  # Leave this in so we have a sink for extra arguments that might show up in our config.
 ) -> None:
 	"""
@@ -77,13 +99,20 @@ def train_model(
 			loss.backward()
 			optimizer.step()
 			optimizer.zero_grad()
+		model.save_pretrained(f"./checkpoint_{epoch}")
 		model.eval()
+		loss_accumulator = 0.0
 		for offset in range(0, len(validation_data), batch_size):
 			text = [x[0] for x in train_data[offset:offset + batch_size]]
 			target = [x[1] for x in train_data[offset:offset + batch_size]]
 			text = transform_and_preprocess(text).to(device)
 			target = transform_and_preprocess(target).to(device)
 			loss = model(text, labels=target).loss
+			loss_accumulator += loss.data
+		loss_accumulator /= (len(validation_data)/float(batch_size))
+		print(f"Epoch {epoch}: {loss_accumulator}")
+		log_out.write(f"Epoch {epoch}: {loss_accumulator}\n")
+
 
 def load_data(dataset: str) -> List[Tuple[str, str]]:
 	# Small disclaimer: the data has these fields: url,topics,title,text,date,text_len,num_topics,text_ending,extractive
@@ -94,7 +123,7 @@ def load_data(dataset: str) -> List[Tuple[str, str]]:
 	# It's only 50 megs.  What's the worst that could happen?
 	# Narrator: he had no idea what was about to happen.
 	data = list()
-	source_header = "text"
+	source_header = "title"
 	label_header = "topics"
 	with open(dataset, 'rt', encoding="utf-8", errors="ignore") as fin:
 		cin = csv.DictReader(fin)
@@ -106,10 +135,12 @@ def load_data(dataset: str) -> List[Tuple[str, str]]:
 
 def main():
 	training_configuration = {
-		"dataset": "../data/topic_data.csv",
-		"batch_size": 8,
-		"num_epochs": 3,
-		"learning_rate": 1e-5,
+		"dataset": "./data/topic_data.csv",
+		"batch_size": 16,
+		"num_epochs": 100,
+		"learning_rate": 1e-3,
+		"prompt": PROMPT_PREFIX,
+		"max_input_length": MAX_INPUT_LENGTH,
 		"validation_percent": 0.1,
 	}
 
@@ -119,8 +150,9 @@ def main():
 
 	data = load_data(training_configuration["dataset"])
 	model = build_model()
-	train_model(model, data, **training_configuration)
-	model.save_pretrained("./trained_model")
+	train_model(model, data, log_out=run_log, **training_configuration)
+	model.save_pretrained("./modeling/trained_model")
+
 
 if __name__=="__main__":
 	main()
