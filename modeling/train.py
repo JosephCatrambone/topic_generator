@@ -19,7 +19,7 @@ from transformers import T5ForConditionalGeneration
 from torch.optim import AdamW
 
 # Some slightly gross global-state things.
-MAX_INPUT_LENGTH = 256  # Characters, not tokens.
+MAX_INPUT_LENGTH = 400  # Characters, not tokens.
 PROMPT_PREFIX = "keywords for text: "
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 tokenizer = AutoTokenizer.from_pretrained('google/byt5-small')
@@ -38,9 +38,13 @@ def predict(input_batch: List[str]) -> List[str]:
 	global _serving_model
 	if _serving_model is None:
 		_serving_model = T5ForConditionalGeneration.from_pretrained("./modeling/trained_model", local_files_only=True)
-	inputs = transform_and_preprocess(input_batch)
-	outputs = _serving_model.generate(inputs)
-	return [tokenizer.decode(out, skip_special_tokens=True) for out in outputs]
+	inputs = transform_and_preprocess(input_batch, add_prompt=True)
+	outputs = _serving_model.generate(
+		input_ids=inputs.input_ids,
+		attention_mask=inputs.attention_mask,
+	)
+	#return [tokenizer.decode(out, skip_special_tokens=True) for out in outputs]
+	return tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
 
 def build_model(restore: bool = False) -> T5ForConditionalGeneration:
@@ -53,7 +57,7 @@ def build_model(restore: bool = False) -> T5ForConditionalGeneration:
 	return model
 
 
-def transform_and_preprocess(input_batch: List[str]) -> torch.Tensor:
+def transform_and_preprocess(input_batch: List[str], add_prompt: bool) -> torch.Tensor:
 	"""
 	Perform the required preprocessing on an input example and return a tensor for use in the model.
 	Strictly speaking for T5, this isn't really a requirement, but for models with other kinds of tokenizers this is
@@ -62,8 +66,11 @@ def transform_and_preprocess(input_batch: List[str]) -> torch.Tensor:
 	# If we weren't using the auto-tokenizer to pad, we would do this:
 	# return torch.tensor([list(txt.encode("utf-8")) for txt in input_batch]) + 3
 	# The +3 broadcasts and offsets all tokens by three.  The values 0, 1, and 2 are reserved.
-	input_batch = [PROMPT_PREFIX + x[:MAX_INPUT_LENGTH] for x in input_batch]  # Trim everything to a capped length to avoid OOM.
-	return tokenizer(input_batch, padding="longest", return_tensors="pt").input_ids
+	prefix = ""
+	if add_prompt:
+		prefix = PROMPT_PREFIX
+	input_batch = [prefix + x[:MAX_INPUT_LENGTH] for x in input_batch]  # Trim everything to a capped length to avoid OOM.
+	return tokenizer(input_batch, padding="longest", return_tensors="pt")
 
 
 def train_model(
@@ -93,20 +100,20 @@ def train_model(
 		for offset in range(0, len(train_data), batch_size):
 			text = [x[0] for x in train_data[offset:offset+batch_size]]
 			target = [x[1] for x in train_data[offset:offset+batch_size]]
-			text = transform_and_preprocess(text).to(device)
-			target = transform_and_preprocess(target).to(device)
+			text = transform_and_preprocess(text, add_prompt=True).input_ids.to(device)
+			target = transform_and_preprocess(target, add_prompt=False).input_ids.to(device)
 			loss = model(text, labels=target).loss
 			loss.backward()
 			optimizer.step()
 			optimizer.zero_grad()
-		model.save_pretrained(f"./checkpoint_{epoch}")
+		model.save_pretrained(f"./modeling/checkpoint_{epoch}")
 		model.eval()
 		loss_accumulator = 0.0
 		for offset in range(0, len(validation_data), batch_size):
 			text = [x[0] for x in train_data[offset:offset + batch_size]]
 			target = [x[1] for x in train_data[offset:offset + batch_size]]
-			text = transform_and_preprocess(text).to(device)
-			target = transform_and_preprocess(target).to(device)
+			text = transform_and_preprocess(text, add_prompt=True).input_ids.to(device)
+			target = transform_and_preprocess(target, add_prompt=False).input_ids.to(device)
 			loss = model(text, labels=target).loss
 			loss_accumulator += loss.data
 		loss_accumulator /= (len(validation_data)/float(batch_size))
@@ -136,12 +143,13 @@ def load_data(dataset: str) -> List[Tuple[str, str]]:
 def main():
 	training_configuration = {
 		"dataset": "./data/topic_data.csv",
-		"batch_size": 16,
-		"num_epochs": 100,
+		"batch_size": 8,
+		"num_epochs": 20,
 		"learning_rate": 1e-3,
 		"prompt": PROMPT_PREFIX,
 		"max_input_length": MAX_INPUT_LENGTH,
 		"validation_percent": 0.1,
+		"notes": "Had to decrease the batch size because I keep getting OOM.  Going from 16->8."
 	}
 
 	# Log the last run before we start:
