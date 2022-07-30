@@ -7,33 +7,83 @@
 </head>
 <body>
 	<div class="container">
+		<!-- Take inputs to summarize: -->
 		<div class="columns">
-			<div class="column">
-
+			<div class="column is-three-fifths">
 				<form class="box">
 					<div class="field">
 						<label class="label">Headline</label>
 						<div class="control">
-							<input class="input" type="text" placeholder="Your Headline Here">
+							<input id="text_headline" class="input" type="text" placeholder="Your Headline Here">
 						</div>
 					</div>
 
 					<div class="field">
 						<label class="label">Body</label>
 						<div class="control">
-							<input class="input" type="text" placeholder="This is ignored for now.">
+							<input id="text_body" class="textarea" type="text" placeholder="This is ignored for now.">
 						</div>
 					</div>
 
-					<button class="button is-primary">Predict Keywords</button>
+					<button id="request" class="button is-primary">Predict Keywords</button>
 				</form>
 
+				<div class="box">
+					<labels class="label">Keywords: </labels>
+					<div id="keyword_box" class="box">
+					</div>
+				</div>
+			</div>
+
+			<!-- Store old operations: -->
+			<div class="column">
+				<!-- block just doesn't look right -->
+				<div id="previous_outputs" class="box">
+					<label class="label">Previous Requests:</label>
+				</div>
 			</div>
 		</div>
 	</div>
 
 	<script type="application/javascript">
+		function main() {
+			const submit_button = document.querySelector("#request");
+			const text_headline = document.querySelector("#text_headline");
+			const text_body = document.querySelector("#text_body");
+			const output_div = document.querySelector("#keyword_box");
+			const previous_outputs = document.querySelector("#previous_outputs");
 
+			submit_button.addEventListener('click', (event) => {
+				event.preventDefault();
+				fetch("/api/v1/", {
+					method: "POST",
+					headers: {"Content-Type": "application/json"},
+					body: JSON.stringify({"text": text_headline.value})
+				}).then((result) => {
+					console.log(result);
+
+					if(result.ok) {
+						result.text().then((txt) => {
+							// Push this request and the last content into the backlog.
+							var new_result = document.createElement("div");
+							new_result.classList.add("box");
+							new_result.textContent = txt;
+							previous_outputs.appendChild(new_result);
+
+							// Also show this result:
+							output_div.textContent = txt;
+						});
+					} else {
+						// Show an error or something.
+						output_div.textContent = "ERROR: " + result
+					}
+				});
+			});
+		}
+
+		window.addEventListener('DOMContentLoaded', (event) => {
+			main();
+		});
 	</script>
 </body>
 </html>
